@@ -6,7 +6,7 @@ package dto
 
 // ProductUpcRequest is one product_upc feed row (old file line: UPC|SKU).
 // FlexString does "STEP 1 — CLEAN INPUT" (trim; missing / null / array / object -> "").
-// Send both as JSON strings: a number loses its leading zeros (078933354 -> "78933354").
+// Send both as JSON strings: a number with a leading zero (078933354) is invalid JSON (400).
 // The binding tags are "STEP 2 — VALIDATE".
 type ProductUpcRequest struct {
 	Upc FlexString `json:"upc" binding:"required,max=255"`

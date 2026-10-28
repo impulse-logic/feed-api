@@ -15,10 +15,10 @@ import (
 	"feed-api/internal/repository"
 )
 
-// STEP 3: allowed SKU length (same numbers as the CLI).
+// STEP 3: allowed SKU length (13 so the usual 13-digit SKUs are accepted).
 const (
 	skuMinLength = 8
-	skuMaxLength = 12
+	skuMaxLength = 13
 )
 
 type ProductUpcHandler struct {
@@ -49,10 +49,9 @@ func (h *ProductUpcHandler) Store(c *gin.Context) {
 	}
 	upc, sku := string(req.Upc), string(req.Sku)
 
-	// 3. SKU LENGTH RULE (ENABLED, same as the CLI)
-	// The SKU must be 8..12 characters, otherwise 422 (the CLI silently skipped the row).
-	// NOTE: almost every product has a 13-character SKU, so this rule blocks UPCs for most
-	// products. To disable it, comment out this whole if-block. Nothing else needs to change.
+	// 3. SKU LENGTH RULE
+	// The SKU must be 8..13 characters, otherwise 422 (the CLI allowed 8..12 and silently skipped the row).
+	// The SKU is used as sent: no zeros are added or removed. To disable the rule, comment out this if-block.
 	if n := utf8.RuneCountInString(sku); n < skuMinLength || n > skuMaxLength {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"error": fmt.Sprintf("SKU must be %d to %d characters (got %d).", skuMinLength, skuMaxLength, n),
