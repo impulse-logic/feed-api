@@ -2071,7 +2071,7 @@
     },
     {
       "name": "Product UPCs",
-      "description": "POST /product-upcs scenarios U1-U11 (internal/routes/product_upc_routes.go). Run in order.\n\nSend upc and sku as JSON strings: numbers lose leading zeros (U9).\nSKU length rule (8..12 characters) is enabled, same as the CLI; U6 shows the 422.\nU2, U3 and U5 show \"inserted\" only before cleanup. Run this after testing (U1's row 023456789012 is real data and stays):\n\nDELETE FROM product_upcs WHERE upc IN ('999000000001','999000000002','999000000003','999000000004','0020700500000');",
+      "description": "POST /product-upcs scenarios U1-U11 (internal/routes/product_upc_routes.go). Run in order.\n\nSend upc and sku as JSON strings: numbers lose leading zeros (U9).\nSKU length rule: 8..13 characters (U6 shows a 13-character SKU accepted, U7 the 422).\nU2, U3 and U5 show \"inserted\" only before cleanup. Run this after testing (U1's row 023456789012 is real data and stays):\n\nDELETE FROM product_upcs WHERE upc IN ('999000000001','999000000002','999000000003','999000000004','0020700500000');",
       "item": [
         {
           "name": "U1 - Existing UPC, same product (unchanged)",
@@ -2340,7 +2340,7 @@
           }
         },
         {
-          "name": "U6 - 13-character SKU (422 while the length rule is enabled)",
+          "name": "U6 - 13-character SKU (accepted)",
           "event": [
             {
               "listen": "test",
@@ -2348,15 +2348,18 @@
                 "type": "text/javascript",
                 "exec": [
                   "const res = pm.response.json();",
-                  "pm.test('Status 422', () => pm.response.to.have.status(422));",
-                  "pm.test('error message', () => pm.expect(res.error).to.eql('SKU must be 8 to 12 characters (got 13).'));"
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('processed', () => pm.expect(res.status).to.eql('processed'));",
+                  "pm.test('leading zeros kept', () => pm.expect(res.upc).to.eql('0020700500000'));",
+                  "pm.test('product 785490', () => pm.expect(res.productId).to.eql(785490));",
+                  "pm.test('inserted or unchanged', () => pm.expect(res.action).to.be.oneOf(['inserted', 'unchanged']));"
                 ]
               }
             }
           ],
           "request": {
             "method": "POST",
-            "description": "With the SKU length rule enabled (default): 422. With the rule disabled (comment out STEP 3 in product_upc_handler.go): 200 inserted, productId 785490, and this test fails.",
+            "description": "13-character SKU and UPC, sent as strings (no zeros added or removed): 200, productId 785490. \"inserted\" on the first run, \"unchanged\" after.",
             "header": [
               {
                 "key": "Content-Type",
@@ -2397,14 +2400,14 @@
                 "exec": [
                   "const res = pm.response.json();",
                   "pm.test('Status 422', () => pm.response.to.have.status(422));",
-                  "pm.test('error message', () => pm.expect(res.error).to.eql('SKU must be 8 to 12 characters (got 7).'));"
+                  "pm.test('error message', () => pm.expect(res.error).to.eql('SKU must be 8 to 13 characters (got 7).'));"
                 ]
               }
             }
           ],
           "request": {
             "method": "POST",
-            "description": "7 characters: below the 8..12 rule.",
+            "description": "7 characters: below the 8..13 rule.",
             "header": [
               {
                 "key": "Content-Type",
