@@ -12,7 +12,6 @@ import (
 	"gorm.io/gorm"
 
 	"feed-api/internal/dto"
-	"feed-api/internal/model"
 	"feed-api/internal/repository"
 )
 
@@ -43,45 +42,11 @@ func (h *ProductHandler) Store(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON body"})
 		return
 	}
-	row := req.ToRow()
-
-	// 3a. STATUS
-	// CURRENT RULE (ENABLED): "1" => A (active); anything else, including "0" and empty => I.
-	status := "I"
-	if row.Status == "1" {
-		status = "A"
-	}
-	// OLD FILE RULE (DISABLED): the old file mapped "0" => A, anything else => I.
-	// Keep it commented while the external team sends 1 = active. If they keep the
-	// old meaning (0 = active), replace the CURRENT RULE above with:
-	//
-	//	status := "I"
-	//	if row.Status == "0" {
-	//		status = "A"
-	//	}
-
-	// 3b. NUMBERS: empty => 0. Whole numbers drop the decimal part ("12.7" => 12).
-	// 3c. innerPack: 0 or empty => 1.
-	innerPack := toInt(row.InnerPack)
-	if innerPack == 0 {
-		innerPack = 1
-	}
-
-	// 3d. MOQ (store_products.moq, written in STEP 8b): missing or empty => 1, otherwise the number sent.
-	moq := 1.0
-	if row.Moq != "" {
-		moq = toFloat(row.Moq)
-	}
-
-	// 4. SHIFT RULE
-	// Only level3Key is checked. If it is a shift key: L1 stays, L2 = L3, L3 = L4, L4 = L5, L5 = "".
-	// The original L2 is dropped (same rule as the hierarchy feed, so the keys match the category).
-	levels := row.Levels
-	shifted := false
-	if isShiftKey(levels[2]) {
-		levels = [5]string{levels[0], levels[2], levels[3], levels[4], ""}
-		shifted = true
-	}
+	// 3. STATUS, NUMBERS, innerPack, MOQ + 4. SHIFT RULE (dto.Prepare, shared with the products queue)
+	// status "1" => A, anything else => I. Empty numbers => 0, whole numbers drop decimals.
+	// innerPack 0 => 1. moq empty => 1. level3Key in the shift keys => L2 = L3, L3 = L4, L4 = L5, L5 = "".
+	prepared := req.ToRow().Prepare()
+	levels, shifted, status := prepared.Levels, prepared.Shifted, prepared.Product.Status
 
 	// 5. FIND THE CATEGORY (all 5 keys must match exactly)
 	// Not found => 422, nothing saved: the hierarchy feed must run first.
@@ -102,30 +67,10 @@ func (h *ProductHandler) Store(c *gin.Context) {
 
 	// 6..8. SAVE IN ONE TRANSACTION (brand, product, inactive cleanup or BOS/FOS locations)
 	// brand_id and the fixed values are set by the repository.
-	product := model.Product{
-		Sku:            row.Sku,
-		CategoryID:     category.ID,
-		Name:           row.Name,
-		Brand:          row.Brand,
-		Status:         status,
-		VendorKey:      row.VendorKey,
-		UomBuy:         row.UomBuy,
-		BuyQty:         toFloat(row.BuyQty),
-		UomSell:        row.UomSell,
-		InnerPack:      innerPack,
-		MasterPack:     toInt(row.MasterPack),
-		Image:          row.Image,
-		PrimaryUpc:     row.PrimaryUpc,
-		RetailPrice:    toFloat(row.RetailPrice),
-		UnitLandedCost: toFloat(row.UnitLandedCost),
-		SkuType:        row.SkuType,
-		ParentSku:      row.ParentSku,
-		QtyPerParent:   toFloat(row.QtyPerParent),
-		ReferenceSku:   row.ReferenceSku,
-		ShelfDays:      toInt(row.ShelfDays),
-	}
+	product := prepared.Product
+	product.CategoryID = category.ID
 
-	report, err := h.repo.Import(c.Request.Context(), product, category, moq)
+	report, err := h.repo.Import(c.Request.Context(), product, category, prepared.Moq)
 	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			c.JSON(http.StatusConflict, gin.H{"error": "Conflicting row (e.g. a brand with this name under another key, or the same sku saved at the same time). Nothing was saved."})

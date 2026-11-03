@@ -65,6 +65,14 @@ func SetupRouter(db *gorm.DB, cfg *config.Config, sbClient *azservicebus.Client)
 	consumers := map[string]*queue.Consumer{}
 	if sbClient != nil {
 		consumers["vendor"] = queue.NewConsumer(sbClient, "vendor", queue.NewVendorProcessor(vendorRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["product-hierarchies"] = queue.NewConsumer(sbClient, "product-hierarchies", queue.NewProductHierarchyProcessor(productHierarchyRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["products"] = queue.NewConsumer(sbClient, "products", queue.NewProductProcessor(productRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["product-upcs"] = queue.NewConsumer(sbClient, "product-upcs", queue.NewProductUpcProcessor(productUpcRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["boh"] = queue.NewConsumer(sbClient, "boh", queue.NewBohProcessor(bohRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["deliveries"] = queue.NewConsumer(sbClient, "deliveries", queue.NewDeliveryProcessor(deliveryRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["stocktake"] = queue.NewConsumer(sbClient, "stocktake", queue.NewStockTakeProcessor(stockTakeRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["product-variants"] = queue.NewConsumer(sbClient, "product-variants", queue.NewProductVariantProcessor(productVariantRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		consumers["pos"] = queue.NewConsumer(sbClient, "pos", queue.NewPosProcessor(posRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
 	}
 	queueHandler := handler.NewQueueHandler(sbClient, cfg.ServiceBusQueues, consumers)
 	// No header needed. To require X-Admin-Token again: r.Group("/queue", handler.RequireAdminToken(cfg.QueueAdminToken))

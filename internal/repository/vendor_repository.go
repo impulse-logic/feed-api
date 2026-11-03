@@ -116,7 +116,7 @@ func (r *VendorRepository) UpsertBatch(ctx context.Context, vendors []dto.Vendor
 	if err != nil {
 		return nil, err
 	}
-	result := &dto.VendorBatchResult{}
+	result := &dto.VendorBatchResult{Written: map[string]bool{}}
 
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// -----------------------------------------------------------------
@@ -126,7 +126,10 @@ func (r *VendorRepository) UpsertBatch(ctx context.Context, vendors []dto.Vendor
 		//   same         => nothing         (not returned)
 		// Sorted by external_id so parallel batches lock rows in the same order (no deadlocks).
 		// -----------------------------------------------------------------
-		var rows []struct{ Inserted bool }
+		var rows []struct {
+			ExternalID string
+			Inserted   bool
+		}
 		if err := tx.Raw(`
 			INSERT INTO vendors (name, external_id, created_at)
 			SELECT t.name, t.external_id, NOW()
@@ -134,7 +137,7 @@ func (r *VendorRepository) UpsertBatch(ctx context.Context, vendors []dto.Vendor
 			ORDER BY t.external_id
 			ON CONFLICT (external_id) DO UPDATE SET name = EXCLUDED.name
 			WHERE vendors.name IS DISTINCT FROM EXCLUDED.name
-			RETURNING (xmax = 0) AS inserted`, string(payload)).Scan(&rows).Error; err != nil {
+			RETURNING external_id, (xmax = 0) AS inserted`, string(payload)).Scan(&rows).Error; err != nil {
 			// The error comes while reading the RETURNING rows, after GORM's TranslateError ran,
 			// so translate it here (a unique name clash => gorm.ErrDuplicatedKey).
 			if translator, ok := tx.Dialector.(gorm.ErrorTranslator); ok {
@@ -143,6 +146,7 @@ func (r *VendorRepository) UpsertBatch(ctx context.Context, vendors []dto.Vendor
 			return err
 		}
 		for _, row := range rows {
+			result.Written[row.ExternalID] = true
 			if row.Inserted {
 				result.Inserted++
 			} else {

@@ -33,4 +33,6 @@ type VendorBatchResult struct {
 	Updated         int64
 	Unchanged       int64
 	StoreLinksAdded int64
+	// Written holds the external_ids that were inserted or updated; the others were unchanged.
+	Written map[string]bool
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
 
@@ -49,15 +48,8 @@ func (h *StockTakeHandler) Store(c *gin.Context) {
 	// 3. CONVERT COUNTS
 	// Locations (7a/7b): count < 1 => clear, otherwise round DOWN (5.7 => 5).
 	// stock_takes (7c):  round UP (5.7 => 6); negatives are kept (-3 stays -3), same as the CLI.
-	bosCount, fosCount := toFloat(string(req.BosQty)), toFloat(string(req.FosQty))
-	counts := dto.StockTakeCounts{
-		BosReceived:     string(req.BosQty),
-		FosReceived:     string(req.FosQty),
-		BosForLocations: countForLocations(bosCount),
-		FosForLocations: countForLocations(fosCount),
-		BosForStockTake: int(math.Ceil(bosCount)),
-		FosForStockTake: int(math.Ceil(fosCount)),
-	}
+	// (dto.Counts, shared with the stocktake queue)
+	counts, bosCount, fosCount := req.Counts()
 
 	// 4. FIND THE STORE by stores.external_id (not stores.id). Not found => 422.
 	storeNotFound := gin.H{"error": "Store not found for this storeId (stores.external_id).", "storeId": storeIDText}
@@ -157,12 +149,4 @@ func (h *StockTakeHandler) Store(c *gin.Context) {
 func (h *StockTakeHandler) serverError(c *gin.Context, err error) {
 	log.Printf("Database error: %v", err)
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to import stocktake"})
-}
-
-// countForLocations: below 1 => 0 (the locations are cleared), otherwise rounded down.
-func countForLocations(count float64) int {
-	if count < 1 {
-		return 0
-	}
-	return int(math.Floor(count))
 }

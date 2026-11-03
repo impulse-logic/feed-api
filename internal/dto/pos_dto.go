@@ -1,6 +1,11 @@
 package dto
 
-import "time"
+import (
+	"fmt"
+	"math"
+	"strconv"
+	"time"
+)
 
 // =============================================================================
 // INPUT
@@ -161,4 +166,76 @@ type PosSaleProduct struct {
 	ID        *uint   `json:"id"`
 	Sku       *string `json:"sku"`
 	MatchedBy string  `json:"matchedBy"`
+}
+
+// Check runs the extra rules after the binding tags (used by POST /pos and the pos queue).
+// failed lists fields that already failed binding; only the first problem per field is kept.
+//
+//	timestamp: a real date (see ParseTime)
+//	register / operator / transaction / seqNumber: fit the integer DB columns; register must not be 0
+//
+// Then STEP 3, CONVERT VALUES (old file transform + import parsing):
+//
+//	qty: round UP (1.2 => 2), negative => 0, empty => 0
+//	transaction / seqNumber: empty or 0 => 1;  operator: empty => 0
+//	prices: decimals, empty => 0;  discountCode: decimal part cut (5.9 => 5)
+//	isPriceOverride: "true" or "1" => true, anything else => false;  timestamp => UTC
+func (r PosRequest) Check(failed map[string]bool) (PosSale, []FieldError) {
+	var errs []FieldError
+	add := func(field, msg string) {
+		if failed[field] {
+			return
+		}
+		failed[field] = true
+		errs = append(errs, FieldError{field, msg})
+	}
+	if failed == nil {
+		failed = map[string]bool{}
+	}
+
+	transactedAt, ok := ParseTime(string(r.Timestamp))
+	if !ok {
+		add("timestamp", "The timestamp field must be a valid date.")
+	}
+	int32Field := func(v FlexString, field, label string) int {
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.ParseInt(string(v), 10, 32)
+		if err != nil {
+			add(field, fmt.Sprintf("The %s field must be between %d and %d.", label, math.MinInt32, math.MaxInt32))
+			return 0
+		}
+		return int(n)
+	}
+	register := int32Field(r.Register, "register", "register")
+	operator := int32Field(r.Operator, "operator", "operator")
+	transaction := int32Field(r.Transaction, "transaction", "transaction")
+	seqNumber := int32Field(r.SeqNumber, "seqNumber", "seq number")
+	if r.Register != "" && register == 0 {
+		add("register", "The selected register is invalid.")
+	}
+
+	qty := max(int(math.Ceil(toFloat(string(r.Qty)))), 0)
+	if transaction == 0 {
+		transaction = 1
+	}
+	if seqNumber == 0 {
+		seqNumber = 1
+	}
+	isPriceOverride := string(r.IsPriceOverride)
+	return PosSale{
+		TransactedAt:     transactedAt.UTC(),
+		Register:         register,
+		Operator:         operator,
+		TransactionType:  string(r.TransactionType),
+		Transaction:      transaction,
+		SeqNumber:        seqNumber,
+		Sku:              string(r.Sku),
+		Qty:              qty,
+		RegularPriceEach: toFloat(string(r.RegularPriceEach)),
+		SoldPriceEach:    toFloat(string(r.SoldPriceEach)),
+		IsPriceOverride:  isPriceOverride == "true" || isPriceOverride == "1",
+		DiscountCode:     int(math.Trunc(toFloat(string(r.DiscountCode)))),
+	}, errs
 }

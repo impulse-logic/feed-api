@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
 
@@ -50,10 +49,7 @@ func (h *BohHandler) Store(c *gin.Context) {
 
 	// 3. QUANTITY RULE (old file transform: roundUp, then negativesAsZero)
 	// Round UP to a whole number (56.2 => 57, -2.5 => -2), then negative => 0.
-	qty := int(math.Ceil(toFloat(qtyText)))
-	if qty < 0 {
-		qty = 0
-	}
+	qty := dto.BohQty(qtyText) // shared with the boh queue
 
 	// 4. FIND THE STORE by stores.external_id (not stores.id)
 	// Not found => 422, nothing saved (the CLI silently skipped the row).

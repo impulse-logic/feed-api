@@ -48,7 +48,7 @@ func LoadConfig() *Config {
 
 		ServiceBusConnectionString: getEnv("SERVICE_BUS_CONNECTION_STRING", ""),
 		ServiceBusNamespace:        getEnv("SERVICE_BUS_NAMESPACE", ""),
-		ServiceBusQueues:           splitList(getEnv("SERVICE_BUS_ENTITY", "vendor")),
+		ServiceBusQueues:           splitList(getEnv("SERVICE_BUS_ENTITY", "vendor,product-hierarchies,products,product-upcs,boh,deliveries,stocktake,product-variants,pos")),
 		QueueAdminToken:            getEnv("QUEUE_ADMIN_TOKEN", ""),
 		QueueWorkers:               getEnvInt("QUEUE_WORKERS", 8, 1, 32),
 		QueueBatchSize:             getEnvInt("QUEUE_BATCH_SIZE", 100, 1, 1000),

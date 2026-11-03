@@ -10,5 +10,6 @@ import (
 func RegisterQueueRoutes(rg *gin.RouterGroup, h *handler.QueueHandler) {
 	rg.GET("/deadletter", h.DeadLetter)
 	rg.GET("/:name/peek", h.Peek)
+	rg.POST("/:name/send", h.Send)
 	rg.POST("/:name/process", h.Process)
 }

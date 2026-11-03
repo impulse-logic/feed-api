@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -22,6 +24,7 @@ const (
 type QueueHandler struct {
 	client    *azservicebus.Client       // nil when Service Bus is not configured
 	peeker    *queue.Peeker              // read-only view, nil when not configured
+	publisher *queue.Publisher           // pushes messages into queues, nil when not configured
 	queues    []string                   // allowed queue names (SERVICE_BUS_ENTITY)
 	consumers map[string]*queue.Consumer // queues that can be processed (pick => insert => delete)
 }
@@ -30,6 +33,7 @@ func NewQueueHandler(client *azservicebus.Client, queues []string, consumers map
 	h := &QueueHandler{client: client, queues: queues, consumers: consumers}
 	if client != nil {
 		h.peeker = queue.NewPeeker(client)
+		h.publisher = queue.NewPublisher(client)
 	}
 	return h
 }
@@ -92,6 +96,52 @@ func (h *QueueHandler) peek(c *gin.Context, name string, deadLetter bool) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"message": fmt.Sprintf("Peeked %d %s (not removed)", result.Count, kind),
+		"data":    result,
+	})
+}
+
+// Send pushes the JSON body (an object or an array) into the queue as a message.
+// A big array is split into several messages automatically. The content is checked later by process.
+// POST /queue/:name/send
+func (h *QueueHandler) Send(c *gin.Context) {
+	// 1. Service Bus must be configured
+	if h.client == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service Bus is not configured."})
+		return
+	}
+
+	// 2. Only queues listed in SERVICE_BUS_ENTITY
+	name := c.Param("name")
+	if !slices.Contains(h.queues, name) {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Unknown queue %q. Allowed: %v", name, h.queues)})
+		return
+	}
+
+	// 3. Body must be a JSON object or array
+	body, err := c.GetRawData()
+	trimmed := bytes.TrimSpace(body)
+	if err != nil || len(trimmed) == 0 || !json.Valid(trimmed) || (trimmed[0] != '{' && trimmed[0] != '[') {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "The body must be a JSON object or a JSON array."})
+		return
+	}
+
+	// 4. Send
+	result, err := h.publisher.Send(c.Request.Context(), name, trimmed)
+	switch {
+	case errors.Is(err, queue.ErrEmptyArray):
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "The array is empty: nothing to send."})
+		return
+	case errors.Is(err, azservicebus.ErrMessageTooLarge):
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "One item is larger than the queue's maximum message size."})
+		return
+	case err != nil:
+		log.Printf("Service Bus send error (queue %s): %v", name, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Could not send to the queue."})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": fmt.Sprintf("Sent %d items in %d messages to queue %s", result.Items, result.Messages, name),
 		"data":    result,
 	})
 }
