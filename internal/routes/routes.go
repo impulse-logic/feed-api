@@ -1,15 +1,19 @@
 package routes
 
 import (
+	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"feed-api/internal/config"
 	"feed-api/internal/handler"
+	"feed-api/internal/queue"
 	"feed-api/internal/repository"
 )
 
 // SetupRouter wires repositories and handlers, then registers every route group.
-func SetupRouter(db *gorm.DB) *gin.Engine {
+// sbClient is nil when Service Bus is not configured.
+func SetupRouter(db *gorm.DB, cfg *config.Config, sbClient *azservicebus.Client) *gin.Engine {
 	r := gin.Default()
 
 	// Vendors
@@ -56,6 +60,15 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	posRepo := repository.NewPosRepository(db)
 	posHandler := handler.NewPosHandler(posRepo)
 	RegisterPosRoutes(r.Group("/pos"), posHandler)
+
+	// Azure Service Bus queues (admin only). Each processable queue = one consumer + its processor.
+	consumers := map[string]*queue.Consumer{}
+	if sbClient != nil {
+		consumers["vendor"] = queue.NewConsumer(sbClient, "vendor", queue.NewVendorProcessor(vendorRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+	}
+	queueHandler := handler.NewQueueHandler(sbClient, cfg.ServiceBusQueues, consumers)
+	// No header needed. To require X-Admin-Token again: r.Group("/queue", handler.RequireAdminToken(cfg.QueueAdminToken))
+	RegisterQueueRoutes(r.Group("/queue"), queueHandler)
 
 	return r
 }

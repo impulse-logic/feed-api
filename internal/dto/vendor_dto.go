@@ -19,3 +19,18 @@ type VendorUpsertResult struct {
 type VendorBefore struct {
 	Name string `json:"name"`
 }
+
+// VendorMessage is one message body from the Service Bus "vendor" queue:
+// {"external_id": "1011", "name": "vendor1"}. FlexString trims both values while decoding.
+type VendorMessage struct {
+	Name       FlexString `json:"name" binding:"required,max=255"`
+	ExternalID FlexString `json:"external_id" binding:"required,max=255"`
+}
+
+// VendorBatchResult is what VendorRepository.UpsertBatch did for one batch.
+type VendorBatchResult struct {
+	Inserted        int64
+	Updated         int64
+	Unchanged       int64
+	StoreLinksAdded int64
+}

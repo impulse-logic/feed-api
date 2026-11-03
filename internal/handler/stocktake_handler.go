@@ -108,16 +108,18 @@ func (h *StockTakeHandler) Store(c *gin.Context) {
 		return
 	}
 
-	// 6b. OPEN PICKLIST: blocked when the product is on any picklist of this store whose status != C.
-	onOpenPicklist, err := h.repo.IsOnOpenPicklist(ctx, store.ID, product.ID)
-	if err != nil {
-		h.serverError(c, err)
-		return
-	}
-	if onOpenPicklist {
-		c.JSON(http.StatusConflict, gin.H{"error": "Product is on an open picklist in this store. Complete the picklist first."})
-		return
-	}
+	// 6b. OPEN PICKLIST (DISABLED): a count is no longer blocked by an open picklist.
+	// When enabled, it blocks when the product is on any picklist of this store whose status != C.
+	// To enable it again, uncomment this block.
+	// onOpenPicklist, err := h.repo.IsOnOpenPicklist(ctx, store.ID, product.ID)
+	// if err != nil {
+	// 	h.serverError(c, err)
+	// 	return
+	// }
+	// if onOpenPicklist {
+	// 	c.JSON(http.StatusConflict, gin.H{"error": "Product is on an open picklist in this store. Complete the picklist first."})
+	// 	return
+	// }
 
 	// 6c. BACK-OF-STORE LOCATION must exist in this store.
 	hasBos, err := h.repo.HasBosLocation(ctx, store.ID, product.ID)

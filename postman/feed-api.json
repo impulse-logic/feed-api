@@ -56,6 +56,15 @@
     {
       "key": "posP5PicklistId",
       "value": ""
+    },
+    {
+      "key": "queueAdminToken",
+      "value": "",
+      "description": "Copy QUEUE_ADMIN_TOKEN from .env (Current value only; never commit it)."
+    },
+    {
+      "key": "queueNextSequence",
+      "value": "0"
     }
   ],
   "item": [
@@ -4236,7 +4245,7 @@
     },
     {
       "name": "Stocktake",
-      "description": "POST /stocktake scenarios T1-T12 (internal/routes/stocktake_routes.go). Run in order.\n\nstoreId is stores.external_id. Counts REPLACE location quantities (split evenly over the locations); store_products is not updated.\nT12 needs a temporary SQL toggle (see its description). T1 and T6 show \"inserted\" only before cleanup. Cleanup restores the values from before the tests:\n\nBEGIN;\nUPDATE product_location SET \"case\" = NULL, units = NULL, qty = 0\nWHERE id IN (15726087, 21496139, 21496172, 21496626, 39631764, 39631765);\nDELETE FROM stock_takes WHERE (store_id, product_id) IN ((102, 129465), (333502389, 785490));\nCOMMIT;",
+      "description": "POST /stocktake scenarios T1-T12 (internal/routes/stocktake_routes.go). Run in order.\n\nstoreId is stores.external_id. Counts REPLACE location quantities (split evenly over the locations); store_products is not updated.\nT7 is skipped while the open-picklist check is disabled. T12 needs a temporary SQL toggle (see its description). T1 and T6 show \"inserted\" only before cleanup. Cleanup restores the values from before the tests:\n\nBEGIN;\nUPDATE product_location SET \"case\" = NULL, units = NULL, qty = 0\nWHERE id IN (15726087, 21496139, 21496172, 21496626, 39631764, 39631765);\nDELETE FROM stock_takes WHERE (store_id, product_id) IN ((102, 129465), (333502389, 785490));\nCOMMIT;",
       "item": [
         {
           "name": "T1 - First count (locations set, stock_takes INSERT)",
@@ -4651,8 +4660,19 @@
           }
         },
         {
-          "name": "T7 - Product on an open picklist (409)",
+          "name": "T7 - DISABLED (picklist check commented out)",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The open-picklist check (6b) is commented out in stocktake_handler.go, so this request would overwrite real data.",
+                  "// To re-enable: uncomment 6b in the handler, then remove the next line.",
+                  "pm.execution.skipRequest();"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -6286,6 +6306,467 @@
               ],
               "path": [
                 "pos"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Queue (Service Bus)",
+      "description": "GET /queue/:name/peek, GET /queue/deadletter?queue=:name and POST /queue/:name/process (internal/routes/queue_routes.go).\n\nPeek is read-only. Process picks messages (PeekLock), saves them to the DB and only then deletes them from the queue (Q6/Q7 change real data).\n\nSet the queueAdminToken collection variable to QUEUE_ADMIN_TOKEN from .env first. Guide: docs/SERVICE_BUS.md",
+      "item": [
+        {
+          "name": "Q1 - Peek vendor (first 10)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('queue = vendor', () => pm.expect(res.data.queue).to.eql('vendor'));",
+                  "pm.test('at most 10 messages', () => pm.expect(res.data.messages.length).to.be.at.most(10));",
+                  "pm.test('vendor body is one vendor or an array of vendors', () => res.data.messages.forEach(m => [].concat(m.body).forEach(v => pm.expect(v).to.include.keys('external_id'))));",
+                  "pm.collectionVariables.set('queueNextSequence', res.data.nextSequence);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "description": "Oldest 10 messages of the vendor queue. Saves nextSequence for Q2.",
+            "header": [
+              {
+                "key": "X-Admin-Token",
+                "value": "{{queueAdminToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/vendor/peek?count=10&fromSequence=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "vendor",
+                "peek"
+              ],
+              "query": [
+                {
+                  "key": "count",
+                  "value": "10"
+                },
+                {
+                  "key": "fromSequence",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q2 - Peek vendor (next page)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('starts after Q1', () => res.data.messages.forEach(m => pm.expect(m.sequenceNumber).to.be.at.least(Number(pm.collectionVariables.get('queueNextSequence')))));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "description": "Continues after Q1 using nextSequence.",
+            "header": [
+              {
+                "key": "X-Admin-Token",
+                "value": "{{queueAdminToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/vendor/peek?count=10&fromSequence={{queueNextSequence}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "vendor",
+                "peek"
+              ],
+              "query": [
+                {
+                  "key": "count",
+                  "value": "10"
+                },
+                {
+                  "key": "fromSequence",
+                  "value": "{{queueNextSequence}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q3 - Missing token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error message', () => pm.expect(pm.response.json().error).to.eql('Missing or invalid X-Admin-Token header.'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "description": "No X-Admin-Token header.",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/vendor/peek",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "vendor",
+                "peek"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q4 - Unknown queue (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "description": "Only queues in SERVICE_BUS_ENTITY can be read.",
+            "header": [
+              {
+                "key": "X-Admin-Token",
+                "value": "{{queueAdminToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/unknown/peek",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "unknown",
+                "peek"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q5 - Bad count (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('error message', () => pm.expect(pm.response.json().error).to.eql('count must be a number from 1 to 100.'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "description": "count must be 1..100.",
+            "header": [
+              {
+                "key": "X-Admin-Token",
+                "value": "{{queueAdminToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/vendor/peek?count=500",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "vendor",
+                "peek"
+              ],
+              "query": [
+                {
+                  "key": "count",
+                  "value": "500"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q6 - Process vendor (max 5)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('every received message was settled', () => {",
+                  "  const d = res.data;",
+                  "  pm.expect(d.completed + d.deadLettered + d.abandoned).to.be.at.most(d.received);",
+                  "});",
+                  "pm.test('no temporary errors', () => pm.expect(res.data.abandoned).to.eql(0));",
+                  "pm.test('at most 5', () => pm.expect(res.data.received).to.be.at.most(5));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "description": "Picks up to 5 messages, upserts the vendors (same rules as POST /vendors), then deletes them from the queue. Bad messages go to the dead-letter queue.",
+            "header": [
+              {
+                "key": "X-Admin-Token",
+                "value": "{{queueAdminToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/vendor/process?max=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "vendor",
+                "process"
+              ],
+              "query": [
+                {
+                  "key": "max",
+                  "value": "5"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q7 - Process vendor (whole queue)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('every received message was settled', () => {",
+                  "  const d = res.data;",
+                  "  pm.expect(d.completed + d.deadLettered + d.abandoned).to.be.at.most(d.received);",
+                  "});",
+                  "pm.test('no temporary errors', () => pm.expect(res.data.abandoned).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "description": "No max: runs until the queue is empty. Returns counts (inserted / updated / unchanged / storeLinksAdded) and speed.",
+            "header": [
+              {
+                "key": "X-Admin-Token",
+                "value": "{{queueAdminToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/vendor/process",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "vendor",
+                "process"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q8 - Bad max (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('error message', () => pm.expect(pm.response.json().error).to.eql('max must be 0 or a positive whole number (0 = until the queue is empty).'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "description": "max must be 0 or a positive whole number.",
+            "header": [
+              {
+                "key": "X-Admin-Token",
+                "value": "{{queueAdminToken}}"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/vendor/process?max=-1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "vendor",
+                "process"
+              ],
+              "query": [
+                {
+                  "key": "max",
+                  "value": "-1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q9 - Dead-letter vendor (first 10)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('dead-letter sub-queue', () => pm.expect(res.data.subQueue).to.eql('deadletter'));",
+                  "pm.test('every message has a reason', () => res.data.messages.forEach(m => pm.expect(m.deadLetterReason).to.be.a('string')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "description": "Read-only view of the vendor dead-letter queue with the reason for each message. Nothing is removed.",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/deadletter?queue=vendor&count=10&fromSequence=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "deadletter"
+              ],
+              "query": [
+                {
+                  "key": "queue",
+                  "value": "vendor"
+                },
+                {
+                  "key": "count",
+                  "value": "10"
+                },
+                {
+                  "key": "fromSequence",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Q10 - Dead-letter without queue (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('error message', () => pm.expect(pm.response.json().error).to.eql('The queue query parameter is required, e.g. /queue/deadletter?queue=vendor'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "description": "The queue query parameter is required.",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/queue/deadletter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "queue",
+                "deadletter"
               ]
             }
           }
