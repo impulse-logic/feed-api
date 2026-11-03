@@ -2,10 +2,8 @@ package handler
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -13,12 +11,6 @@ import (
 
 	"feed-api/internal/dto"
 	"feed-api/internal/repository"
-)
-
-// STEP 3: allowed SKU length (13 so the usual 13-digit SKUs are accepted).
-const (
-	skuMinLength = 8
-	skuMaxLength = 13
 )
 
 type ProductUpcHandler struct {
@@ -50,12 +42,10 @@ func (h *ProductUpcHandler) Store(c *gin.Context) {
 	upc, sku := string(req.Upc), string(req.Sku)
 
 	// 3. SKU LENGTH RULE
-	// The SKU must be 8..13 characters, otherwise 422 (the CLI allowed 8..12 and silently skipped the row).
+	// The SKU must be 8..13 characters (dto.CheckSkuLength, shared with the queue), otherwise 422 (the CLI allowed 8..12 and silently skipped the row).
 	// The SKU is used as sent: no zeros are added or removed. To disable the rule, comment out this if-block.
-	if n := utf8.RuneCountInString(sku); n < skuMinLength || n > skuMaxLength {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": fmt.Sprintf("SKU must be %d to %d characters (got %d).", skuMinLength, skuMaxLength, n),
-		})
+	if msg := dto.CheckSkuLength(sku); msg != "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": msg})
 		return
 	}
 

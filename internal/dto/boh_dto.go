@@ -1,5 +1,10 @@
 package dto
 
+import (
+	"math"
+	"strconv"
+)
+
 // =============================================================================
 // INPUT
 // =============================================================================
@@ -13,6 +18,14 @@ type BohRequest struct {
 	Sku     FlexString `json:"sku" binding:"required,max=255"`
 	Qty     FlexString `json:"qty" binding:"required,numeric"`
 	Date    FlexString `json:"date" binding:"required,datetime=2006-01-02"`
+}
+
+// BohQty is STEP 3, the QUANTITY RULE (used by POST /boh and the boh queue; old file transform:
+// roundUp, then negativesAsZero). Round UP to a whole number (56.2 => 57, -2.5 => -2), then negative => 0.
+// qty was already validated as numeric.
+func BohQty(qty string) int {
+	f, _ := strconv.ParseFloat(qty, 64)
+	return max(int(math.Ceil(f)), 0)
 }
 
 // =============================================================================

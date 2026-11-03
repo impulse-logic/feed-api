@@ -1,5 +1,12 @@
 package dto
 
+import (
+	"math"
+	"strconv"
+
+	"feed-api/internal/model"
+)
+
 // =============================================================================
 // INPUT
 // =============================================================================
@@ -146,4 +153,99 @@ type LocationsReport struct {
 	BosAdded              int64 `json:"bosAdded"`
 	FosLocationsCreated   int   `json:"fosLocationsCreated"`
 	FosAdded              int64 `json:"fosAdded"`
+}
+
+// =============================================================================
+// RULES (used by POST /products and the products queue)
+// =============================================================================
+
+// PreparedProduct is a validated row after STEP 3 + 4. Product has everything except CategoryID
+// (STEP 5 finds it) and BrandID (the repository sets it).
+type PreparedProduct struct {
+	Product model.Product
+	Levels  [5]string
+	Shifted bool
+	Moq     float64
+}
+
+// Prepare runs STEP 3 (status, numbers, innerPack, moq) and STEP 4 (shift rule).
+func (r ProductRow) Prepare() PreparedProduct {
+	// 3a. STATUS
+	// CURRENT RULE (ENABLED): "1" => A (active); anything else, including "0" and empty => I.
+	status := "I"
+	if r.Status == "1" {
+		status = "A"
+	}
+	// OLD FILE RULE (DISABLED): the old file mapped "0" => A, anything else => I.
+	// Keep it commented while the external team sends 1 = active. If they keep the
+	// old meaning (0 = active), replace the CURRENT RULE above with:
+	//
+	//	status := "I"
+	//	if r.Status == "0" {
+	//		status = "A"
+	//	}
+
+	// 3b. NUMBERS: empty => 0. Whole numbers drop the decimal part ("12.7" => 12).
+	// 3c. innerPack: 0 or empty => 1.
+	innerPack := toInt(r.InnerPack)
+	if innerPack == 0 {
+		innerPack = 1
+	}
+
+	// 3d. MOQ (store_products.moq, written in STEP 8b): missing or empty => 1, otherwise the number sent.
+	moq := 1.0
+	if r.Moq != "" {
+		moq = toFloat(r.Moq)
+	}
+
+	// 4. SHIFT RULE
+	// Only level3Key is checked. If it is a shift key: L1 stays, L2 = L3, L3 = L4, L4 = L5, L5 = "".
+	// The original L2 is dropped (same rule as the hierarchy feed, so the keys match the category).
+	levels := r.Levels
+	shifted := false
+	if IsShiftKey(levels[2]) {
+		levels = [5]string{levels[0], levels[2], levels[3], levels[4], ""}
+		shifted = true
+	}
+
+	return PreparedProduct{
+		Product: model.Product{
+			Sku:            r.Sku,
+			Name:           r.Name,
+			Brand:          r.Brand,
+			Status:         status,
+			VendorKey:      r.VendorKey,
+			UomBuy:         r.UomBuy,
+			BuyQty:         toFloat(r.BuyQty),
+			UomSell:        r.UomSell,
+			InnerPack:      innerPack,
+			MasterPack:     toInt(r.MasterPack),
+			Image:          r.Image,
+			PrimaryUpc:     r.PrimaryUpc,
+			RetailPrice:    toFloat(r.RetailPrice),
+			UnitLandedCost: toFloat(r.UnitLandedCost),
+			SkuType:        r.SkuType,
+			ParentSku:      r.ParentSku,
+			QtyPerParent:   toFloat(r.QtyPerParent),
+			ReferenceSku:   r.ReferenceSku,
+			ShelfDays:      toInt(r.ShelfDays),
+		},
+		Levels:  levels,
+		Shifted: shifted,
+		Moq:     moq,
+	}
+}
+
+// toFloat: decimals, empty => 0 (the value was already validated as numeric).
+func toFloat(v string) float64 {
+	if v == "" {
+		return 0
+	}
+	f, _ := strconv.ParseFloat(v, 64)
+	return f
+}
+
+// toInt: whole numbers, empty => 0, decimal part dropped like PHP's (int) cast ("12.7" => 12).
+func toInt(v string) int {
+	return int(math.Trunc(toFloat(v)))
 }

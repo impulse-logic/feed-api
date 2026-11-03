@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -17,26 +15,6 @@ import (
 	"feed-api/internal/model"
 	"feed-api/internal/repository"
 )
-
-// Activity-log events for skipped feed rows (same names as the CLI).
-const (
-	eventStoreNotFound   = "DELIVERY_STORE_NOT_FOUND_SKIPPED"
-	eventProductNotFound = "DELIVERY_PRODUCTS_NOT_FOUND_SKIPPED"
-	eventRecordsSkipped  = "DELIVERY_FEED_RECORDS_SKIPPED"
-)
-
-// maxAsn: deliveries.asn is a Postgres integer.
-const maxAsn = 2147483647
-
-// etaLayouts: accepted ETA formats. ISO with a time zone is recommended (2026-10-20T08:00:00Z).
-// The last four have no zone, so they use the app's local time zone (as the CLI used the server's).
-var etaLayouts = []string{
-	time.RFC3339Nano,
-	"2006-01-02T15:04:05",
-	"2006-01-02 15:04:05",
-	"2006-01-02 15:04",
-	"2006-01-02",
-}
 
 type DeliveryHandler struct {
 	repo *repository.DeliveryRepository
@@ -75,34 +53,22 @@ func (h *DeliveryHandler) Store(c *gin.Context) {
 		}
 	}
 
-	asn, asnErr := strconv.ParseInt(string(req.Asn), 10, 64)
-	if _, failed := errs["asn"]; !failed && (asnErr != nil || asn < 1 || asn > maxAsn) {
-		addError("asn", fmt.Sprintf("The asn field must be between 1 and %d.", maxAsn))
+	// asn 1..2147483647 and eta a real date + 3. CONVERT VALUES (dto.Check, shared with the deliveries queue):
+	// quantities round UP (2.1 => 3, -1.5 => -1), empty => 0, negatives KEPT. ETA stored in UTC.
+	failed := map[string]bool{}
+	for field := range errs {
+		failed[field] = true
 	}
-	eta, etaOK := parseEta(string(req.Eta))
-	if _, failed := errs["eta"]; !failed && !etaOK {
-		addError("eta", "The eta field must be a valid date.")
+	row, extra := req.Check(failed)
+	for _, fe := range extra {
+		addError(fe.Field, fe.Message)
 	}
 	if len(errs) > 0 {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": firstError, "errors": errs})
 		return
 	}
 
-	// 3. CONVERT VALUES (old file transform: roundUp, defaultIfFalsy 0)
-	// Quantities: round UP (2.1 => 3, -1.5 => -1), empty => 0. Negatives are KEPT (no negatives rule here).
-	// ETA: stored in UTC. deliveryUnitNumber and timestamp are accepted but never stored.
-	roundUp := func(v string) int { return int(math.Ceil(toFloat(v))) }
-	row := dto.DeliveryRow{
-		Asn:              asn,
-		Eta:              eta.UTC(),
-		From:             string(req.From),
-		DeliveryUnitCode: string(req.DeliveryUnitCode),
-		Description:      string(req.Description),
-		ExpectedCases:    roundUp(string(req.ExpectedCases)),
-		ExpectedUnits:    roundUp(string(req.ExpectedUnits)),
-		DamagedCases:     roundUp(string(req.DamagedCases)),
-	}
-	sku := string(req.Sku)
+	asn, sku := row.Asn, string(req.Sku)
 
 	// 4. FIND THE STORE by stores.external_id (the feed's Store_ID)
 	// Not found => activity log (store_id NULL) + 422.
@@ -116,7 +82,7 @@ func (h *DeliveryHandler) Store(c *gin.Context) {
 		}
 	}
 	if store == nil {
-		if err := h.repo.LogActivity(ctx, eventStoreNotFound, nil, map[string]any{
+		if err := h.repo.LogActivity(ctx, dto.DeliveryEventStoreNotFound, nil, map[string]any{
 			"stores":               []int64{externalStoreID},
 			"noOfProductsAffected": 1,
 		}); err != nil {
@@ -138,7 +104,7 @@ func (h *DeliveryHandler) Store(c *gin.Context) {
 		return
 	}
 	if product == nil || product.Status != "A" {
-		if err := h.repo.LogActivity(ctx, eventProductNotFound, &store.ID, map[string]any{
+		if err := h.repo.LogActivity(ctx, dto.DeliveryEventProductNotFound, &store.ID, map[string]any{
 			"storeId": store.ID,
 			"products": []map[string]any{{
 				"sku":          sku,
@@ -172,7 +138,7 @@ func (h *DeliveryHandler) Store(c *gin.Context) {
 	// 6a (continued). DELIVERY ALREADY STARTED (status is not planned)
 	// Nothing was changed. Log it OUTSIDE the transaction so the log survives, then 409.
 	if report.Blocked {
-		if err := h.repo.LogActivity(ctx, eventRecordsSkipped, &store.ID, map[string]any{
+		if err := h.repo.LogActivity(ctx, dto.DeliveryEventRecordsSkipped, &store.ID, map[string]any{
 			"storeId":    store.ID,
 			"deliveries": []map[string]any{{"asn": asn, "deliveryUnitCode": row.DeliveryUnitCode}},
 		}); err != nil {
@@ -204,14 +170,4 @@ func (h *DeliveryHandler) Store(c *gin.Context) {
 func (h *DeliveryHandler) serverError(c *gin.Context, err error) {
 	log.Printf("Database error: %v", err)
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to import delivery"})
-}
-
-// parseEta tries every accepted layout. Layouts without a zone use the app's local time zone.
-func parseEta(v string) (time.Time, bool) {
-	for _, layout := range etaLayouts {
-		if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
 }
