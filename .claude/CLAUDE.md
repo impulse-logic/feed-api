@@ -48,4 +48,5 @@ routes/<x>_routes.go  ->  handler/<x>_handler.go  ->  repository/<x>_repository.
 No Docker. Deployment is the Go binary on a Linux VPS with systemd + Nginx + Certbot. The full steps are in `README.md`; keep it in sync when config or run steps change.
 
 ## Config (env vars, see `.env.example`)
-`DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSLMODE, DB_AUTO_MIGRATE, SERVER_PORT, GIN_MODE`. `.env` is git-ignored and must never be committed or read into output.
+`DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSLMODE, DB_AUTO_MIGRATE, SERVER_PORT, GIN_MODE`,
+plus Azure Service Bus: `SERVICE_BUS_CONNECTION_STRING, SERVICE_BUS_NAMESPACE, SERVICE_BUS_ENTITY, QUEUE_ADMIN_TOKEN, QUEUE_WORKERS, QUEUE_BATCH_SIZE` (see `docs/SERVICE_BUS.md`). `.env` is git-ignored and must never be committed or read into output.

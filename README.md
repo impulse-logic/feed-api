@@ -64,6 +64,14 @@ Edit `.env`:
 | `DB_AUTO_MIGRATE` | `true` = create/update tables on startup            | `false`     |
 | `SERVER_PORT`     | Port the API listens on                             | `8080`      |
 | `GIN_MODE`        | `debug` or `release`                                | `debug`     |
+| `SERVICE_BUS_CONNECTION_STRING` | Azure Service Bus connection string (Listen key) | *(none = queue routes off)* |
+| `SERVICE_BUS_NAMESPACE` | Used only when the connection string is empty (Azure AD login) | *(none)* |
+| `SERVICE_BUS_ENTITY` | Queue names the API may read, comma-separated | `vendor,product-hierarchies,products,product-upcs,boh,deliveries,stocktake,product-variants,pos` |
+| `QUEUE_ADMIN_TOKEN` | Secret for the `/queue` endpoints (`X-Admin-Token` header) | *(none = routes off)* |
+| `QUEUE_WORKERS` | Parallel queue readers for `/queue/{name}/process` (1-32) | `8` |
+| `QUEUE_BATCH_SIZE` | Messages per batch / DB transaction (1-1000) | `100` |
+
+Azure Service Bus setup and the `/queue` endpoints are explained in [docs/SERVICE_BUS.md](docs/SERVICE_BUS.md).
 
 ### 4. Tables
 
@@ -211,6 +219,9 @@ DB_SSLMODE=disable
 DB_AUTO_MIGRATE=true
 SERVER_PORT=8080
 GIN_MODE=release
+SERVICE_BUS_CONNECTION_STRING="Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=<listen-policy>;SharedAccessKey=<key>"
+SERVICE_BUS_ENTITY=vendor,product-hierarchies,products,product-upcs,boh,deliveries,stocktake,product-variants,pos
+QUEUE_ADMIN_TOKEN=CHANGE-ME-long-random-token
 ```
 
 Lock it down:

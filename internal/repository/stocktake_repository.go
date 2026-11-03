@@ -79,6 +79,7 @@ func (r *StockTakeRepository) IsInSyncUp(ctx context.Context, storeID, categoryI
 }
 
 // IsOnOpenPicklist — 6b: true when the product is on any picklist of this store that is not completed.
+// Not called while 6b is disabled in the handler.
 func (r *StockTakeRepository) IsOnOpenPicklist(ctx context.Context, storeID, productID uint) (bool, error) {
 	var found bool
 	err := r.db.WithContext(ctx).Raw(`

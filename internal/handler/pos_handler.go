@@ -2,9 +2,7 @@ package handler
 
 import (
 	"errors"
-	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
 
@@ -58,52 +56,25 @@ func (h *PosHandler) Store(c *gin.Context) {
 		}
 	}
 
-	transactedAt, ok := parseEta(string(req.Timestamp))
-	if !ok {
-		addError("timestamp", "The timestamp field must be a valid date.")
+	// timestamp a real date, integer columns fit, register not 0 + 3. CONVERT VALUES
+	// (dto.Check, shared with the pos queue):
+	//   qty: round UP (1.2 => 2), negative => 0, empty => 0
+	//   transaction / seqNumber: empty or 0 => 1;  operator: empty => 0
+	//   prices: decimals, empty => 0;  discountCode: decimal part cut (5.9 => 5)
+	//   isPriceOverride: "true" or "1" => true, anything else => false;  timestamp => UTC
+	failed := map[string]bool{}
+	for field := range errs {
+		failed[field] = true
 	}
-	register := int32Field(string(req.Register), "register", "Register", addError)
-	operator := int32Field(string(req.Operator), "operator", "Operator", addError)
-	transaction := int32Field(string(req.Transaction), "transaction", "Transaction", addError)
-	seqNumber := int32Field(string(req.SeqNumber), "seqNumber", "SeqNumber", addError)
-	if string(req.Register) != "" && register == 0 {
-		addError("register", "The selected register is invalid.")
+	sale, extra := req.Check(failed)
+	for _, fe := range extra {
+		addError(fe.Field, fe.Message)
 	}
 	if len(errs) > 0 {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": firstError, "errors": errs})
 		return
 	}
-
-	// 3. CONVERT VALUES (old file transform + import parsing)
-	//   qty: round UP (1.2 => 2), negative => 0, empty => 0
-	//   transaction / seqNumber: empty or 0 => 1;  operator: empty => 0
-	//   prices: decimals, empty => 0;  discountCode: decimal part cut (5.9 => 5)
-	//   isPriceOverride: "true" or "1" => true, anything else => false;  timestamp => UTC
-	qty := int(math.Ceil(toFloat(string(req.Qty))))
-	if qty < 0 {
-		qty = 0
-	}
-	if transaction == 0 {
-		transaction = 1
-	}
-	if seqNumber == 0 {
-		seqNumber = 1
-	}
-	isPriceOverride := string(req.IsPriceOverride)
-	sale := dto.PosSale{
-		TransactedAt:     transactedAt.UTC(),
-		Register:         register,
-		Operator:         operator,
-		TransactionType:  string(req.TransactionType),
-		Transaction:      transaction,
-		SeqNumber:        seqNumber,
-		Sku:              string(req.Sku),
-		Qty:              qty,
-		RegularPriceEach: toFloat(string(req.RegularPriceEach)),
-		SoldPriceEach:    toFloat(string(req.SoldPriceEach)),
-		IsPriceOverride:  isPriceOverride == "true" || isPriceOverride == "1",
-		DiscountCode:     int(math.Trunc(toFloat(string(req.DiscountCode)))),
-	}
+	qty := sale.Qty
 
 	// 4. FIND THE STORE by stores.external_id (not stores.id). Not found => 422.
 	storeNotFound := gin.H{"error": "Store not found for this storeId (stores.external_id).", "storeId": string(req.StoreId)}
@@ -172,18 +143,4 @@ func (h *PosHandler) Store(c *gin.Context) {
 func (h *PosHandler) serverError(c *gin.Context, err error) {
 	log.Printf("Database error: %v", err)
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to import POS sale"})
-}
-
-// int32Field parses an already-validated whole number for an integer DB column.
-// Empty => 0. Too large for the column => validation error.
-func int32Field(v, jsonKey, goName string, addError func(field, msg string)) int {
-	if v == "" {
-		return 0
-	}
-	n, err := strconv.ParseInt(v, 10, 32)
-	if err != nil {
-		addError(jsonKey, fmt.Sprintf("The %s field must be between %d and %d.", fieldLabel(goName), math.MinInt32, math.MaxInt32))
-		return 0
-	}
-	return int(n)
 }

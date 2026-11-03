@@ -1,5 +1,7 @@
 package dto
 
+import "math"
+
 // =============================================================================
 // INPUT
 // =============================================================================
@@ -88,4 +90,27 @@ type StockTakeStoreRef struct {
 type StockTakeProductRef struct {
 	ID  uint   `json:"id"`
 	Sku string `json:"sku"`
+}
+
+// Counts is STEP 3, CONVERT COUNTS (used by POST /stocktake and the stocktake queue).
+// Locations (7a/7b): count < 1 => clear, otherwise round DOWN (5.7 => 5).
+// stock_takes (7c):  round UP (5.7 => 6); negatives are kept (-3 stays -3), same as the CLI.
+func (r StockTakeRequest) Counts() (counts StockTakeCounts, bosCount, fosCount float64) {
+	bosCount, fosCount = toFloat(string(r.BosQty)), toFloat(string(r.FosQty))
+	return StockTakeCounts{
+		BosReceived:     string(r.BosQty),
+		FosReceived:     string(r.FosQty),
+		BosForLocations: countForLocations(bosCount),
+		FosForLocations: countForLocations(fosCount),
+		BosForStockTake: int(math.Ceil(bosCount)),
+		FosForStockTake: int(math.Ceil(fosCount)),
+	}, bosCount, fosCount
+}
+
+// countForLocations: below 1 => 0 (the locations are cleared), otherwise rounded down.
+func countForLocations(count float64) int {
+	if count < 1 {
+		return 0
+	}
+	return int(math.Floor(count))
 }

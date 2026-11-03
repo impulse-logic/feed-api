@@ -1,6 +1,21 @@
 package dto
 
-import "time"
+import (
+	"fmt"
+	"math"
+	"strconv"
+	"time"
+)
+
+// Activity-log events for skipped feed rows (same names as the CLI).
+const (
+	DeliveryEventStoreNotFound   = "DELIVERY_STORE_NOT_FOUND_SKIPPED"
+	DeliveryEventProductNotFound = "DELIVERY_PRODUCTS_NOT_FOUND_SKIPPED"
+	DeliveryEventRecordsSkipped  = "DELIVERY_FEED_RECORDS_SKIPPED"
+)
+
+// maxAsn: deliveries.asn is a Postgres integer.
+const maxAsn = 2147483647
 
 // =============================================================================
 // INPUT
@@ -95,4 +110,36 @@ type DeliveryStoreRef struct {
 type DeliveryProductRef struct {
 	ID  uint   `json:"id"`
 	Sku string `json:"sku"`
+}
+
+// Check runs the extra rules after the binding tags (used by POST /deliveries and the deliveries queue).
+// failed lists fields that already failed binding; they are not checked again.
+//
+//	asn: 1..2147483647        eta: a real date (see ParseTime)
+//
+// Then STEP 3, CONVERT VALUES (old file transform: roundUp, defaultIfFalsy 0):
+// quantities round UP (2.1 => 3, -1.5 => -1), empty => 0, negatives KEPT. ETA is stored in UTC.
+// deliveryUnitNumber and timestamp are accepted but never stored.
+func (r DeliveryRequest) Check(failed map[string]bool) (DeliveryRow, []FieldError) {
+	var errs []FieldError
+	asn, asnErr := strconv.ParseInt(string(r.Asn), 10, 64)
+	if !failed["asn"] && (asnErr != nil || asn < 1 || asn > maxAsn) {
+		errs = append(errs, FieldError{"asn", fmt.Sprintf("The asn field must be between 1 and %d.", maxAsn)})
+	}
+	eta, etaOK := ParseTime(string(r.Eta))
+	if !failed["eta"] && !etaOK {
+		errs = append(errs, FieldError{"eta", "The eta field must be a valid date."})
+	}
+
+	roundUp := func(v FlexString) int { return int(math.Ceil(toFloat(string(v)))) }
+	return DeliveryRow{
+		Asn:              asn,
+		Eta:              eta.UTC(),
+		From:             string(r.From),
+		DeliveryUnitCode: string(r.DeliveryUnitCode),
+		Description:      string(r.Description),
+		ExpectedCases:    roundUp(r.ExpectedCases),
+		ExpectedUnits:    roundUp(r.ExpectedUnits),
+		DamagedCases:     roundUp(r.DamagedCases),
+	}, errs
 }

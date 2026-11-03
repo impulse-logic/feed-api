@@ -1,5 +1,16 @@
 package dto
 
+import (
+	"fmt"
+	"unicode/utf8"
+)
+
+// STEP 3: allowed SKU length (13 so the usual 13-digit SKUs are accepted).
+const (
+	skuMinLength = 8
+	skuMaxLength = 13
+)
+
 // =============================================================================
 // INPUT
 // =============================================================================
@@ -11,6 +22,15 @@ package dto
 type ProductUpcRequest struct {
 	Upc FlexString `json:"upc" binding:"required,max=255"`
 	Sku FlexString `json:"sku" binding:"required,max=255"`
+}
+
+// CheckSkuLength is STEP 3 (used by POST /product-upcs and the product-upcs queue): the SKU must be
+// 8..13 characters. Returns "" when it is fine. The SKU is used as sent: no zeros are added or removed.
+func CheckSkuLength(sku string) string {
+	if n := utf8.RuneCountInString(sku); n < skuMinLength || n > skuMaxLength {
+		return fmt.Sprintf("SKU must be %d to %d characters (got %d).", skuMinLength, skuMaxLength, n)
+	}
+	return ""
 }
 
 // =============================================================================
