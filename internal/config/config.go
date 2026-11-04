@@ -27,6 +27,7 @@ type Config struct {
 	QueueAdminToken            string
 	QueueWorkers               int
 	QueueBatchSize             int
+	QueueEmptyWaitMs           int // a receive that gets nothing this long => the queue is empty
 }
 
 func LoadConfig() *Config {
@@ -52,6 +53,7 @@ func LoadConfig() *Config {
 		QueueAdminToken:            getEnv("QUEUE_ADMIN_TOKEN", ""),
 		QueueWorkers:               getEnvInt("QUEUE_WORKERS", 8, 1, 32),
 		QueueBatchSize:             getEnvInt("QUEUE_BATCH_SIZE", 100, 1, 1000),
+		QueueEmptyWaitMs:           getEnvInt("QUEUE_EMPTY_WAIT_MS", 1000, 200, 10000),
 	}
 }
 
