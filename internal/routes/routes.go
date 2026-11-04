@@ -1,6 +1,9 @@
 package routes
 
 import (
+	"context"
+	"time"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -64,15 +67,25 @@ func SetupRouter(db *gorm.DB, cfg *config.Config, sbClient *azservicebus.Client)
 	// Azure Service Bus queues (admin only). Each processable queue = one consumer + its processor.
 	consumers := map[string]*queue.Consumer{}
 	if sbClient != nil {
-		consumers["vendor"] = queue.NewConsumer(sbClient, "vendor", queue.NewVendorProcessor(vendorRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["product-hierarchies"] = queue.NewConsumer(sbClient, "product-hierarchies", queue.NewProductHierarchyProcessor(productHierarchyRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["products"] = queue.NewConsumer(sbClient, "products", queue.NewProductProcessor(productRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["product-upcs"] = queue.NewConsumer(sbClient, "product-upcs", queue.NewProductUpcProcessor(productUpcRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["boh"] = queue.NewConsumer(sbClient, "boh", queue.NewBohProcessor(bohRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["deliveries"] = queue.NewConsumer(sbClient, "deliveries", queue.NewDeliveryProcessor(deliveryRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["stocktake"] = queue.NewConsumer(sbClient, "stocktake", queue.NewStockTakeProcessor(stockTakeRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["product-variants"] = queue.NewConsumer(sbClient, "product-variants", queue.NewProductVariantProcessor(productVariantRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
-		consumers["pos"] = queue.NewConsumer(sbClient, "pos", queue.NewPosProcessor(posRepo), cfg.QueueWorkers, cfg.QueueBatchSize)
+		queueCfg := queue.Config{
+			Workers:   cfg.QueueWorkers,
+			BatchSize: cfg.QueueBatchSize,
+			EmptyWait: time.Duration(cfg.QueueEmptyWaitMs) * time.Millisecond,
+			Admin:     queue.NewAdminClient(cfg),
+		}
+		consumers["vendor"] = queue.NewConsumer(sbClient, "vendor", queue.NewVendorProcessor(vendorRepo), queueCfg)
+		consumers["product-hierarchies"] = queue.NewConsumer(sbClient, "product-hierarchies", queue.NewProductHierarchyProcessor(productHierarchyRepo), queueCfg)
+		consumers["products"] = queue.NewConsumer(sbClient, "products", queue.NewProductProcessor(productRepo), queueCfg)
+		consumers["product-upcs"] = queue.NewConsumer(sbClient, "product-upcs", queue.NewProductUpcProcessor(productUpcRepo), queueCfg)
+		consumers["boh"] = queue.NewConsumer(sbClient, "boh", queue.NewBohProcessor(bohRepo), queueCfg)
+		consumers["deliveries"] = queue.NewConsumer(sbClient, "deliveries", queue.NewDeliveryProcessor(deliveryRepo), queueCfg)
+		consumers["stocktake"] = queue.NewConsumer(sbClient, "stocktake", queue.NewStockTakeProcessor(stockTakeRepo), queueCfg)
+		consumers["product-variants"] = queue.NewConsumer(sbClient, "product-variants", queue.NewProductVariantProcessor(productVariantRepo), queueCfg)
+		consumers["pos"] = queue.NewConsumer(sbClient, "pos", queue.NewPosProcessor(posRepo), queueCfg)
+	}
+	// Open the receiver links in the background, so the first process call is fast.
+	for _, consumer := range consumers {
+		go consumer.Warm(context.Background())
 	}
 	queueHandler := handler.NewQueueHandler(sbClient, cfg.ServiceBusQueues, consumers)
 	// No header needed. To require X-Admin-Token again: r.Group("/queue", handler.RequireAdminToken(cfg.QueueAdminToken))

@@ -46,13 +46,24 @@ func runPicklistStep(tx *gorm.DB, storeID uint, ids []uint) (dto.PosPicklistRepo
 	}
 
 	// ---- 7.1 Locations: stop if NO product has BOS, or NO product has FOS ----
-	withBos, err := productsWithLocation(tx, storeID, ids, true)
-	if err != nil {
+	var withBos, withFos []uint
+	var locations []struct {
+		ProductID uint
+		Bos, Fos  bool
+	}
+	if err := tx.Raw(`SELECT l.product_id, COALESCE(bool_or(sl.is_back), false) AS bos, COALESCE(bool_or(NOT sl.is_back), false) AS fos
+		FROM product_location l JOIN store_location sl ON sl.id = l.location_id
+		WHERE l.product_id IN ? AND sl.store_id = ?
+		GROUP BY l.product_id`, ids, storeID).Scan(&locations).Error; err != nil {
 		return report, err
 	}
-	withFos, err := productsWithLocation(tx, storeID, ids, false)
-	if err != nil {
-		return report, err
+	for _, l := range locations {
+		if l.Bos {
+			withBos = append(withBos, l.ProductID)
+		}
+		if l.Fos {
+			withFos = append(withFos, l.ProductID)
+		}
 	}
 	switch {
 	case len(withBos) == 0 && len(withFos) == 0:
@@ -118,17 +129,26 @@ func runPicklistStep(tx *gorm.DB, storeID uint, ids []uint) (dto.PosPicklistRepo
 
 	// ---- 7.7 Trigger: deduction_counter >= moq x inner_pack (moq = ceil(moq) if > 0, else 1) ----
 	var triggered []uint
-	for _, pid := range candidates {
-		var sp struct {
-			Moq              *float64
-			DeductionCounter int
-			InnerPack        int
-		}
-		if err := tx.Raw(`SELECT sp.moq, sp.deduction_counter, p.inner_pack
+	type counter struct {
+		ProductID        uint
+		Moq              *float64
+		DeductionCounter int
+		InnerPack        int
+	}
+	counters := map[uint]counter{}
+	if len(candidates) > 0 {
+		var rows []counter
+		if err := tx.Raw(`SELECT sp.product_id, sp.moq, sp.deduction_counter, p.inner_pack
 			FROM store_products sp JOIN products p ON p.id = sp.product_id
-			WHERE sp.store_id = ? AND sp.product_id = ?`, storeID, pid).Scan(&sp).Error; err != nil {
+			WHERE sp.store_id = ? AND sp.product_id IN ?`, storeID, candidates).Scan(&rows).Error; err != nil {
 			return report, err
 		}
+		for _, row := range rows {
+			counters[row.ProductID] = row
+		}
+	}
+	for _, pid := range candidates {
+		sp := counters[pid]
 		moq := 1
 		if sp.Moq != nil && *sp.Moq > 0 {
 			moq = int(math.Ceil(*sp.Moq))

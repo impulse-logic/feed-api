@@ -113,6 +113,7 @@ create and delete queues and change everything in the namespace, and it has been
 | `QUEUE_ADMIN_TOKEN` | *(none)* | Not used right now (the `/queue` endpoints need no header). See `internal/routes/routes.go` to turn the check back on. |
 | `QUEUE_WORKERS` | `8` | Parallel readers in one process run (1–32). |
 | `QUEUE_BATCH_SIZE` | `100` | Messages per batch, which is also one DB transaction (1–1000). |
+| `QUEUE_EMPTY_WAIT_MS` | `1000` | Only used when the message count can't be read (key without the Manage right): a receive that gets nothing this long means the queue is empty (200–10000). |
 
 The `/queue` endpoints need **no header and no token**: just call the URL.
 
@@ -394,22 +395,42 @@ items that were already saved come back as "unchanged", so no duplicates are cre
 
 ### Speed
 
-Measured from a PC in Bangladesh, with about 250 ms network latency to Azure:
+**Where the time goes** (measured on `boh` from a PC in Bangladesh). Every process response has
+`timings` (ms; summed over the parallel workers), and the server log has one line per run:
 
-| Run | Result |
+```json
+"timings": { "countMs": 171, "receiveMs": 14583, "handleMs": 147, "settleMs": 1801, "emptyWaitMs": 0 }
+```
+
+| Run | Time |
 |---|---|
-| First run after the app starts (opens the connections) | 2,000 messages in ~27 s |
-| Every later run | **2,000 messages in 6 s** (~650/s; 3 s of that is the final "queue empty" check) |
-| Database part | ~40 ms per 100 vendors |
+| Empty queue | **0.17 s** (0.75 s for the first call after a restart) |
+| 1 message | **~2.1–2.8 s** |
+| 3 messages | **~2.9 s** |
+| 8 messages | **~2.6 s** (received in parallel) |
+| Database part (`handleMs`) | 3–150 ms per batch. Not the bottleneck. |
 
-- **Network latency is the limit.** On a server in the **same Azure region** as the namespace (latency about
-  1 ms), the same code is many times faster.
-- Raise `QUEUE_WORKERS` (up to 32) to go faster.
-- Service Bus itself has a ceiling: a Standard-tier queue handles roughly a few thousand messages per
-  second; Premium handles more.
-- The app reuses its connections between runs. Only the first run after a restart pays the connection
-  cost. The first peek after a restart takes ~3 s; after that, peek takes well under a second.
-- An empty-queue run returns after ~3 s, or up to ~30 s right after a restart.
+**What makes it fast:**
+
+1. **Message count first.** Each run asks Service Bus how many messages are waiting (~0.17 s; needs
+   the **Manage** right, which the current key has).
+   - With **0 messages**, the run returns at once.
+   - Otherwise it stops exactly after that many messages: there is **no end-of-queue wait**. Before this
+     change, every run waited 3 s at the end.
+   - Without the Manage right, the run falls back to a `QUEUE_EMPTY_WAIT_MS` wait (default 1 s).
+2. **Links opened at startup.** On start, every receiver link is opened in the background (each takes
+   about 2 s, so all of them take about 2 minutes). A run uses the links that are already open, so calls
+   right after a restart work too, with fewer links.
+3. **Parallel receive.** Service Bus delivers a message about **2 s after the receiver asks**. This was
+   measured: even a receive that is already waiting gets a new message ~2.06 s after it was sent. This is
+   Azure's own delay for this namespace and can't be changed by code. So a run spreads the known messages
+   over the open links and receives them **in parallel**, paying that ~2 s once instead of once per message.
+4. **Batch database save** (`boh`): a whole batch is saved in one transaction with 5 queries (stores,
+   products, store_qty, boh upsert, store_products upsert) instead of ~7 round trips per count.
+
+**So "under 3 s"** holds for small and medium runs. A big queue (thousands of messages) is limited by
+Azure delivery. Raise `QUEUE_WORKERS` (up to 32) for more parallel links. A server in the same Azure
+region as the namespace, or the Premium tier, delivers faster.
 
 ### Running it automatically
 
@@ -659,7 +680,7 @@ One count, or an array of counts, with the same fields as `POST /boh`:
 
    A failure makes the count **invalid**.
 3. **Quantity rule:** round UP to a whole number, then a negative becomes 0 (`56.2` → 57, `-2.5` → 0).
-4. **De-duplicate** by (`storeId`, `sku`, `date`), the BOH row's unique key. The newest copy is used;
+4. **De-duplicate** by (store, product, date), the BOH row's unique key. The newest copy is used;
    each earlier copy is a **duplicate**.
 5. **Find the store** by `stores.external_id` (not `stores.id`). If none matches → **invalid**: "Store not
    found for this storeId (…) (stores.external_id)."
@@ -667,19 +688,19 @@ One count, or an array of counts, with the same fields as `POST /boh`:
    - Not found → **invalid**: "Product not found for this SKU (…)."
      SKUs like `.750154559506` or `0 04003213006` only match if a product has exactly that sku.
    - Not active → **invalid**: "Product is not active (status I). BOH is only stored for active products."
-7. **Save in one transaction per count**, the same as the endpoint:
-   - `store_qty`: what the system holds in this store before the count
-   - the `boh` row (insert, or update the qty)
-   - `store_products.total_qty`
+7. **Save the whole batch in ONE transaction** (`BohRepository.SaveBatch`, 5 queries for up to 100
+   messages). The rules are the same as the endpoint, and it was tested to give exactly the same rows:
+   - `store_qty`: what the system holds in this store before the count (the sum of the product's location qty)
+   - the `boh` rows: insert, or update the qty (`ON CONFLICT (store_id, product_id, date)`)
+   - `store_products.total_qty` = the **last** count of the batch for each store + product (the
+     endpoint's "last count wins")
 
-   If two workers insert the same new count at once, it is retried (up to 3 times).
+   Stores and products are looked up once per batch. Rows are written in key order, so parallel batches
+   never deadlock. A unique-key race with another writer is retried (up to 3 times).
 8. **Unchanged:** a count is type **unchanged** ("already in the database with the same qty for this
-   store, sku and date (nothing to update)") when the boh row was unchanged AND `total_qty` was unchanged.
-
-   > `store_products.total_qty` keeps the **last count processed**, whatever its date (the endpoint's
-   > rule). If one message has several dates for the same store + sku, each count rewrites `total_qty`.
-   > So sending that message again shows those counts as **updated**, not unchanged. A single count sent
-   > again is unchanged.
+   store, sku and date (nothing to update)") when its boh row didn't change AND it didn't set a new
+   `total_qty`. Sending the same message again gives all `unchanged`, even with several dates for the
+   same store + sku.
 9. **Settle:** the same as the other queues.
    - Saved counts stay saved, and only the not-saved ones go to the DLQ.
    - A body that is not JSON (e.g. `"body_boh.json"`) is dead-lettered whole.
@@ -793,7 +814,7 @@ In the DLQ, `external_id` holds the `variantSku` and `name` holds `parent …`.
 ## 5i. The `pos` queue
 
 The steps are **exactly the steps of `POST /pos`**. The queue uses `dto.PosRequest.Check` and
-`PosRepository.FindProducts` / `Import`.
+`PosRepository.FindProductsByCodes` / `Import` (`POST /pos` uses `FindProducts`, which calls the same code).
 
 ```json
 [
@@ -819,8 +840,12 @@ The steps are **exactly the steps of `POST /pos`**. The queue uses `dto.PosReque
 3. **De-duplicate** by store + register + transaction + seqNumber + sku. A repeated line in a batch is a
    **duplicate** and is **never applied twice**.
 4. **Store** not found → **invalid**. **No active product** for this code (by sku, primary_upc or variant)
-   → **invalid**.
-5. **Import in one transaction per line:**
+   → **invalid**. The stores and the products of the whole batch are looked up **once** (one query for
+   all the codes) before any line is saved.
+5. **Import in one transaction per line.** The lines of one store run one by one, in message order. Up
+   to 8 different stores of the batch run **at the same time** (they share no rows). A deadlock or
+   unique-key race with another worker is retried (up to 3 times; the transaction was rolled back, so
+   nothing is counted twice). Each line does:
    - deduct `store_products.total_qty` (never below 0) and add to `deduction_counter`
    - replenishment picklists
    - the `pos` row (a new line, or qty added to the same store + register + product + transaction)
@@ -833,7 +858,8 @@ The steps are **exactly the steps of `POST /pos`**. The queue uses `dto.PosReque
 > **Never resend a processed sale.** Unlike the other queues, POS is **not idempotent**: processing the
 > same line again adds its qty again and deducts the stock again. So:
 > - inside a batch, a repeated line is a `duplicate`, not applied twice;
-> - if the database fails in the middle, a message with **no** saved line is retried (safe), but a
+> - if the database fails in the middle (this stops only that store's remaining lines), a message
+>   with **no** saved line is retried (safe), but a
 >   message that already saved some lines is **not** retried whole. Its unsaved lines go to the DLQ
 >   ("database error before this sale line was saved; resend ONLY this line").
 > - When you resend from the DLQ, send only those lines.
@@ -841,6 +867,19 @@ The steps are **exactly the steps of `POST /pos`**. The queue uses `dto.PosReque
 **Counts:** `recorded` (new pos rows), `merged` (qty added to an existing row), `deducted`,
 `picklistsCreated`, `emptyPicklistsRemoved`, `skipped`, `duplicates`, `unchanged`.
 In the DLQ, `external_id` holds the `sku` and `name` holds `store … / register … / transaction … / seq …`.
+
+**Speed** (database part, `handleMs`), measured on the same 74-line batch across 3 stores and rolled back:
+
+| | Before | Now |
+|---|---|---|
+| Whole batch | 1.71 s | **~0.29 s** with stores one by one; parallel stores make it faster still |
+| Product lookup | ~17–21 ms **per line** (`sku OR primary_upc OR variant` scanned the active products) | **one query per batch**: 501 codes in 73 ms |
+| Picklist step | 2 location queries, plus 1 query per candidate in 7.7 | 1 location query, plus 1 query for all candidates |
+
+The results are **identical**: every outcome, reason, count, `store_products`, `pos` and picklist row was
+compared. `products.primary_upc` has only a trigram index, which is slow for exact matches. The lookup
+avoids it, so no new index is needed. A plain btree index on `products(primary_upc)` would make it faster
+still, but this app does not create indexes on the shared DB.
 
 ---
 

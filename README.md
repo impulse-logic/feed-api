@@ -70,6 +70,7 @@ Edit `.env`:
 | `QUEUE_ADMIN_TOKEN` | Secret for the `/queue` endpoints (`X-Admin-Token` header) | *(none = routes off)* |
 | `QUEUE_WORKERS` | Parallel queue readers for `/queue/{name}/process` (1-32) | `8` |
 | `QUEUE_BATCH_SIZE` | Messages per batch / DB transaction (1-1000) | `100` |
+| `QUEUE_EMPTY_WAIT_MS` | End-of-queue wait when the message count can't be read (200-10000) | `1000` |
 
 Azure Service Bus setup and the `/queue` endpoints are explained in [docs/SERVICE_BUS.md](docs/SERVICE_BUS.md).
 
