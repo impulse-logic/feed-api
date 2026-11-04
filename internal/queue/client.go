@@ -7,6 +7,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
+	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus/admin"
 
 	"feed-api/internal/config"
 )
@@ -43,4 +44,30 @@ func NewClient(cfg *config.Config) (*azservicebus.Client, error) {
 
 	log.Println("Service Bus: not configured (SERVICE_BUS_CONNECTION_STRING / SERVICE_BUS_NAMESPACE are empty)")
 	return nil, nil
+}
+
+// NewAdminClient builds the management client (same login as NewClient). It is only used to read
+// a queue's message count before a run, so a run can skip the end-of-queue wait. That call needs the
+// Manage right; without it the consumers fall back to QUEUE_EMPTY_WAIT_MS. nil when not configured.
+func NewAdminClient(cfg *config.Config) *admin.Client {
+	if cfg.ServiceBusConnectionString != "" {
+		client, err := admin.NewClientFromConnectionString(cfg.ServiceBusConnectionString, nil)
+		if err != nil {
+			return nil
+		}
+		return client
+	}
+	if cfg.ServiceBusNamespace != "" {
+		credential, err := azidentity.NewDefaultAzureCredential(nil)
+		if err != nil {
+			return nil
+		}
+		namespace := strings.TrimSuffix(strings.TrimPrefix(cfg.ServiceBusNamespace, "sb://"), "/")
+		client, err := admin.NewClient(namespace, credential, nil)
+		if err != nil {
+			return nil
+		}
+		return client
+	}
+	return nil
 }

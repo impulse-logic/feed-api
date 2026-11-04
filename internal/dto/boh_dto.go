@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 )
@@ -26,6 +27,37 @@ type BohRequest struct {
 func BohQty(qty string) int {
 	f, _ := strconv.ParseFloat(qty, 64)
 	return max(int(math.Ceil(f)), 0)
+}
+
+// BohBatchRow is one count of a queue batch (BohRepository.SaveBatch), with the store and product found.
+type BohBatchRow struct {
+	StoreID   uint   `json:"store_id"`
+	ProductID uint   `json:"product_id"`
+	Qty       int    `json:"qty"`
+	StoreQty  int    `json:"store_qty"` // filled by SaveBatch
+	Date      string `json:"date"`
+}
+
+// BohTotal is the store_products.total_qty a batch writes: the LAST count per store + product.
+type BohTotal struct {
+	StoreID   uint `json:"store_id"`
+	ProductID uint `json:"product_id"`
+	TotalQty  int  `json:"total_qty"`
+}
+
+// BohBatchResult says which rows a batch changed. A key that is missing was unchanged.
+// The value is true when the row was inserted, false when it was updated.
+type BohBatchResult struct {
+	Boh           map[string]bool // BohKey(store, product, date)
+	StoreProducts map[string]bool // StoreProductKey(store, product)
+}
+
+func BohKey(storeID, productID uint, date string) string {
+	return fmt.Sprintf("%d/%d/%s", storeID, productID, date)
+}
+
+func StoreProductKey(storeID, productID uint) string {
+	return fmt.Sprintf("%d/%d", storeID, productID)
 }
 
 // =============================================================================

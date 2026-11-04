@@ -49,4 +49,4 @@ No Docker. Deployment is the Go binary on a Linux VPS with systemd + Nginx + Cer
 
 ## Config (env vars, see `.env.example`)
 `DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSLMODE, DB_AUTO_MIGRATE, SERVER_PORT, GIN_MODE`,
-plus Azure Service Bus: `SERVICE_BUS_CONNECTION_STRING, SERVICE_BUS_NAMESPACE, SERVICE_BUS_ENTITY, QUEUE_ADMIN_TOKEN, QUEUE_WORKERS, QUEUE_BATCH_SIZE` (see `docs/SERVICE_BUS.md`). `.env` is git-ignored and must never be committed or read into output.
+plus Azure Service Bus: `SERVICE_BUS_CONNECTION_STRING, SERVICE_BUS_NAMESPACE, SERVICE_BUS_ENTITY, QUEUE_ADMIN_TOKEN, QUEUE_WORKERS, QUEUE_BATCH_SIZE, QUEUE_EMPTY_WAIT_MS` (see `docs/SERVICE_BUS.md`). `.env` is git-ignored and must never be committed or read into output.

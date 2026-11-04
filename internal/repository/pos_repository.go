@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"gorm.io/gorm"
@@ -62,47 +63,66 @@ func (r *PosRepository) FindStoreByExternalID(ctx context.Context, externalID in
 //
 // -----------------------------------------------------------------------------
 func (r *PosRepository) FindProducts(ctx context.Context, code string) (*PosProducts, error) {
-	db := r.db.WithContext(ctx)
-	found := &PosProducts{}
-
-	if err := db.Raw(`
-		SELECT p.id, p.sku
-		FROM products p
-		WHERE p.status = 'A'
-		  AND (p.sku = ? OR p.primary_upc = ?
-		       OR EXISTS (SELECT 1 FROM product_variant v WHERE v.product_id = p.id AND v.variant = ?))
-		ORDER BY p.id`, code, code, code).Scan(&found.All).Error; err != nil {
+	found, err := r.FindProductsByCodes(ctx, []string{code})
+	if err != nil {
 		return nil, err
 	}
-	if len(found.All) == 0 {
-		return found, nil
+	if found[code] == nil {
+		return &PosProducts{}, nil
+	}
+	return found[code], nil
+}
+
+// FindProductsByCodes is STEP 5 for many codes in ONE query (the pos queue sends a whole batch).
+// sku and variant use their btree indexes. primary_upc has only a trigram (gin) index, which is ~8x
+// slower for exact matches than scanning the active products, so appending an empty string keeps the planner off it.
+// A code with no active product is not in the map. The rules per code are the same as FindProducts.
+func (r *PosRepository) FindProductsByCodes(ctx context.Context, codes []string) (map[string]*PosProducts, error) {
+	var rows []codeMatch
+	for chunk := range slices.Chunk(slices.Compact(slices.Sorted(slices.Values(codes))), lookupChunk) {
+		var part []codeMatch
+		if err := r.db.WithContext(ctx).Raw(`
+			SELECT p.sku AS code, p.id, p.sku, 'sku' AS matched FROM products p WHERE p.status = 'A' AND p.sku IN ?
+			UNION ALL
+			SELECT p.primary_upc, p.id, p.sku, 'primary_upc' FROM products p WHERE p.status = 'A' AND (p.primary_upc || '') IN ?
+			UNION ALL
+			SELECT v.variant, p.id, p.sku, 'variant' FROM product_variant v JOIN products p ON p.id = v.product_id
+			WHERE p.status = 'A' AND v.variant IN ?
+			ORDER BY 1, 2`, chunk, chunk, chunk).Scan(&part).Error; err != nil {
+			return nil, err
+		}
+		rows = append(rows, part...)
 	}
 
-	// First sku match.
-	for i := range found.All {
-		if found.All[i].Sku == code {
-			found.Sale, found.MatchedBy = &found.All[i], "sku"
-			return found, nil
+	// Every active product found per code, ordered by id (rows are ordered by code, then id).
+	found := map[string]*PosProducts{}
+	for _, row := range rows {
+		f := found[row.Code]
+		if f == nil {
+			f = &PosProducts{MatchedBy: "primary_upc only"}
+			found[row.Code] = f
+		}
+		if n := len(f.All); n == 0 || f.All[n-1].ID != row.ID {
+			f.All = append(f.All, model.Product{ID: row.ID, Sku: row.Sku})
 		}
 	}
-
-	// Otherwise the first product (lowest id) that owns the variant.
-	var ownerIDs []uint
-	if err := db.Raw(`SELECT product_id FROM product_variant WHERE product_id IN ? AND variant = ? ORDER BY product_id LIMIT 1`,
-		productIDs(found.All), code).Scan(&ownerIDs).Error; err != nil {
-		return nil, err
-	}
-	if len(ownerIDs) > 0 {
-		for i := range found.All {
-			if found.All[i].ID == ownerIDs[0] {
-				found.Sale, found.MatchedBy = &found.All[i], "variant"
-				return found, nil
-			}
+	// Sale product: the sku match, else the lowest-id variant owner, else none ("primary_upc only").
+	for _, row := range rows {
+		f := found[row.Code]
+		if row.Matched == "sku" || (row.Matched == "variant" && f.MatchedBy != "sku" && f.MatchedBy != "variant") {
+			i := slices.IndexFunc(f.All, func(p model.Product) bool { return p.ID == row.ID })
+			f.Sale, f.MatchedBy = &f.All[i], row.Matched
 		}
 	}
-
-	found.MatchedBy = "primary_upc only"
 	return found, nil
+}
+
+// codeMatch is one active product found for a code by FindProductsByCodes.
+type codeMatch struct {
+	Code    string
+	ID      uint
+	Sku     string
+	Matched string // "sku", "primary_upc" or "variant"
 }
 
 // Import runs STEP 6..9 for one sale line inside ONE transaction, in this order:
